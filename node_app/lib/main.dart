@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'config/constants.dart';
+import 'package:audio_service/audio_service.dart';
 import 'services/auth_service.dart';
 import 'services/socket_service.dart';
 import 'screens/login_screen.dart';
