@@ -3,6 +3,7 @@ import supabase from '../config/supabase.js'
 
 const connectedNodes = new Map()
 const connectedAdmins = new Set()
+const nodePlaybackState = new Map() // nodeId -> { trackId, trackTitle, trackUrl, action }
 
 export const initSocket = (io) => {
 
@@ -29,16 +30,12 @@ export const initSocket = (io) => {
         .eq('token', socket.handshake.auth.token)
         .single()
 
-      if (!node) {
-        socket.disconnect()
-        return
-      }
+      if (!node) { socket.disconnect(); return }
 
       socket.nodeId = node.id
       socket.nodeName = node.name
       connectedNodes.set(node.id, socket.id)
 
-      // Mark online immediately
       await supabase
         .from('nodes')
         .update({ status: 'online', last_seen: new Date().toISOString() })
@@ -46,7 +43,6 @@ export const initSocket = (io) => {
 
       console.log(`Node connected: ${node.name}`)
 
-      // Notify ALL current admin sockets directly
       for (const adminSocketId of connectedAdmins) {
         io.to(adminSocketId).emit('node_status_changed', {
           nodeId: node.id,
@@ -58,7 +54,6 @@ export const initSocket = (io) => {
 
       socket.join('nodes')
 
-      // Heartbeat
       socket.on('heartbeat', async () => {
         const now = new Date().toISOString()
         await supabase
@@ -68,32 +63,53 @@ export const initSocket = (io) => {
         socket.emit('heartbeat_ack')
       })
 
-      socket.on('playback_started', async ({ trackId }) => {
+      socket.on('playback_started', async ({ trackId, trackTitle, trackUrl }) => {
+        const state = { trackId, trackTitle, trackUrl, action: 'play' }
+        nodePlaybackState.set(node.id, state)
+
         await supabase.from('playback_logs').insert({
           node_id: node.id,
-          track_id: trackId,
+          track_id: trackId || null,
           action: 'play'
         })
+
         for (const adminSocketId of connectedAdmins) {
           io.to(adminSocketId).emit('node_playback_update', {
             nodeId: node.id,
-            action: 'play',
-            trackId
+            ...state
+          })
+        }
+      })
+
+      socket.on('playback_paused', async ({ trackId }) => {
+        const prev = nodePlaybackState.get(node.id) || {}
+        const state = { ...prev, action: 'pause' }
+        nodePlaybackState.set(node.id, state)
+
+        for (const adminSocketId of connectedAdmins) {
+          io.to(adminSocketId).emit('node_playback_update', {
+            nodeId: node.id,
+            ...state
           })
         }
       })
 
       socket.on('playback_stopped', async ({ trackId }) => {
+        nodePlaybackState.delete(node.id)
+
         await supabase.from('playback_logs').insert({
           node_id: node.id,
-          track_id: trackId,
+          track_id: trackId || null,
           action: 'stop'
         })
+
         for (const adminSocketId of connectedAdmins) {
           io.to(adminSocketId).emit('node_playback_update', {
             nodeId: node.id,
             action: 'stop',
-            trackId
+            trackId: null,
+            trackTitle: null,
+            trackUrl: null
           })
         }
       })
@@ -107,6 +123,7 @@ export const initSocket = (io) => {
 
       socket.on('disconnect', async (reason) => {
         connectedNodes.delete(node.id)
+        nodePlaybackState.delete(node.id)
         console.log(`Node disconnected: ${node.name} — ${reason}`)
 
         await supabase
@@ -120,6 +137,13 @@ export const initSocket = (io) => {
             name: node.name,
             status: 'offline'
           })
+          io.to(adminSocketId).emit('node_playback_update', {
+            nodeId: node.id,
+            action: 'stop',
+            trackId: null,
+            trackTitle: null,
+            trackUrl: null
+          })
         }
       })
     }
@@ -130,13 +154,17 @@ export const initSocket = (io) => {
       socket.join('admins')
       console.log(`Admin connected: ${socket.decoded.email}`)
 
-      // Immediately send current state of all nodes
       const { data: allNodes } = await supabase
         .from('nodes')
         .select('id, name, status, last_seen, location')
 
       if (allNodes) {
-        socket.emit('nodes_snapshot', allNodes)
+        // Attach current playback state to each node
+        const nodesWithPlayback = allNodes.map(n => ({
+          ...n,
+          playback: nodePlaybackState.get(n.id) || null
+        }))
+        socket.emit('nodes_snapshot', nodesWithPlayback)
       }
 
       socket.on('cmd_all', ({ command, payload }) => {

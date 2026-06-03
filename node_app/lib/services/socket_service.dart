@@ -12,25 +12,32 @@ class SocketService {
   final AudioPlayerService _audio = AudioPlayerService();
   Timer? _heartbeatTimer;
 
+  String? _currentTrackId;
+  String? _currentTrackTitle;
+  String? _currentTrackUrl;
+
   final StreamController<String> _statusController =
       StreamController<String>.broadcast();
-  final StreamController<String> _commandController =
-      StreamController<String>.broadcast();
+  final StreamController<Map<String, dynamic>> _commandController =
+      StreamController<Map<String, dynamic>>.broadcast();
 
   Stream<String> get statusStream => _statusController.stream;
-  Stream<String> get commandStream => _commandController.stream;
+  Stream<Map<String, dynamic>> get commandStream => _commandController.stream;
 
   bool get isConnected => _socket?.connected ?? false;
+  String? get currentTrackTitle => _currentTrackTitle;
 
   void connect(String token) {
     _socket = IO.io(
       Constants.apiUrl,
       IO.OptionBuilder()
-          .setTransports(['websocket'])
+          .setTransports(['websocket', 'polling'])
           .setAuth({'token': token})
           .enableReconnection()
           .setReconnectionAttempts(999)
           .setReconnectionDelay(3000)
+          .setReconnectionDelayMax(10000)
+          .setTimeout(20000)
           .build(),
     );
 
@@ -51,33 +58,45 @@ class SocketService {
       _statusController.add('error');
     });
 
-    _socket!.on('heartbeat_ack', (_) {
-      // Server acknowledged heartbeat
-    });
+    _socket!.on('heartbeat_ack', (_) {});
 
-    // Listen for commands from admin
     _socket!.on('command', (data) async {
       final command = data['command'] as String;
       final payload = data['payload'] ?? {};
 
       print('Received command: $command');
-      _commandController.add(command);
+      _commandController.add({'command': command, 'payload': payload});
 
       switch (command) {
         case 'play':
           final url = payload['url'] as String?;
           if (url != null && url.isNotEmpty) {
+            _currentTrackUrl = url;
+            _currentTrackId = payload['trackId'] as String?;
+            _currentTrackTitle = payload['trackTitle'] as String? ?? _extractTitle(url);
+
             await _audio.play(url);
-            _socket!.emit('playback_started', {'trackId': payload['trackId']});
+
+            _socket!.emit('playback_started', {
+              'trackId': _currentTrackId,
+              'trackTitle': _currentTrackTitle,
+              'trackUrl': _currentTrackUrl,
+            })  ;
           }
           break;
 
         case 'pause':
           await _audio.pause();
+          _socket!.emit('playback_paused', {
+            'trackId': _currentTrackId,
+          });
           break;
 
         case 'stop':
           await _audio.stop();
+          _currentTrackId = null;
+          _currentTrackTitle = null;
+          _currentTrackUrl = null;
           _socket!.emit('playback_stopped', {'trackId': null});
           break;
 
@@ -89,12 +108,22 @@ class SocketService {
     });
   }
 
+  String _extractTitle(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final segments = uri.pathSegments;
+      if (segments.isNotEmpty) {
+        final filename = segments.last;
+        return filename.split('.').first.replaceAll('-', ' ').replaceAll('_', ' ');
+      }
+    } catch (_) {}
+    return 'Unknown Track';
+  }
+
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (isConnected) {
-        _socket!.emit('heartbeat');
-      }
+      if (isConnected) _socket!.emit('heartbeat');
     });
   }
 

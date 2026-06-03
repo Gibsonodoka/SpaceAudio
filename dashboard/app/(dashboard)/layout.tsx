@@ -12,7 +12,7 @@ export default function DashboardLayout({
   children: React.ReactNode
 }) {
   const router = useRouter()
-  const { token, setAuth, setNodes, updateNodeStatus } = useStore()
+  const { token, setAuth, setNodes, updateNodeStatus, updateNodePlayback } = useStore()
 
   useEffect(() => {
     const storedToken = localStorage.getItem('aud_token')
@@ -23,31 +23,21 @@ export default function DashboardLayout({
       return
     }
 
-    if (!token) {
-      setAuth(JSON.parse(storedUser), storedToken)
-    }
+    if (!token) setAuth(JSON.parse(storedUser), storedToken)
 
-    // Pass token explicitly so socket connects with fresh token
     const socket = getSocket(storedToken)
 
-    socket.on('connect', () => {
-      console.log('Admin socket connected:', socket.id)
-    })
+    socket.on('connect', () => console.log('Admin socket connected'))
+    socket.on('connect_error', (err) => console.error('Socket error:', err.message))
 
-    socket.on('connect_error', (err) => {
-      console.error('Socket connect error:', err.message)
-    })
+    socket.on('nodes_snapshot', (nodes) => setNodes(nodes))
 
-    // Full snapshot when admin connects
-    socket.on('nodes_snapshot', (nodes) => {
-      console.log('Received nodes snapshot:', nodes)
-      setNodes(nodes)
-    })
-
-    // Individual status updates
-    socket.on('node_status_changed', ({ nodeId, status, name, last_seen }) => {
-      console.log('Node status changed:', nodeId, status)
+    socket.on('node_status_changed', ({ nodeId, status }) => {
       updateNodeStatus(nodeId, status)
+    })
+
+    socket.on('node_playback_update', ({ nodeId, action, trackId, trackTitle, trackUrl }) => {
+      updateNodePlayback(nodeId, action === 'stop' ? null : { action, trackId, trackTitle, trackUrl })
     })
 
     return () => {
@@ -55,6 +45,7 @@ export default function DashboardLayout({
       socket.off('connect_error')
       socket.off('nodes_snapshot')
       socket.off('node_status_changed')
+      socket.off('node_playback_update')
     }
   }, [])
 

@@ -17,6 +17,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _connectionStatus = 'connecting';
   String _lastCommand = 'none';
+  String? _currentTrackTitle;
 
   @override
   void initState() {
@@ -26,8 +27,20 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() => _connectionStatus = status);
     });
 
-    _socket.commandStream.listen((command) {
-      if (mounted) setState(() => _lastCommand = command);
+    _socket.commandStream.listen((data) {
+      final command = data['command'] as String;
+      final payload = data['payload'] ?? {};
+      if (mounted) {
+        setState(() {
+          _lastCommand = command;
+          if (command == 'play') {
+            _currentTrackTitle = payload['trackTitle'] ??
+                _socket.currentTrackTitle ?? 'Playing...';
+          } else if (command == 'stop') {
+            _currentTrackTitle = null;
+          }
+        });
+      }
     });
   }
 
@@ -44,12 +57,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Color get _statusColor {
     switch (_connectionStatus) {
-      case 'connected':
-        return Colors.greenAccent;
-      case 'disconnected':
-        return Colors.redAccent;
-      default:
-        return Colors.orangeAccent;
+      case 'connected': return Colors.greenAccent;
+      case 'disconnected': return Colors.redAccent;
+      default: return Colors.orangeAccent;
     }
   }
 
@@ -72,24 +82,19 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            // Status card
+            // Connection status card
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
                 color: const Color(0xFF1A1A2E),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: _statusColor.withOpacity(0.3),
-                  width: 1,
-                ),
+                border: Border.all(color: _statusColor.withOpacity(0.3)),
               ),
               child: Column(
                 children: [
                   Icon(
-                    _connectionStatus == 'connected'
-                        ? Icons.wifi
-                        : Icons.wifi_off,
+                    _connectionStatus == 'connected' ? Icons.wifi : Icons.wifi_off,
                     color: _statusColor,
                     size: 48,
                   ),
@@ -116,6 +121,87 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 20),
 
+            // Now playing card
+            StreamBuilder(
+              stream: _audio.player.playerStateStream,
+              builder: (context, snapshot) {
+                final isPlaying = snapshot.data?.playing ?? false;
+
+                return Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A1A2E),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: isPlaying
+                          ? const Color(0xFF6366F1).withOpacity(0.4)
+                          : Colors.transparent,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: isPlaying
+                              ? const Color(0xFF6366F1).withOpacity(0.2)
+                              : Colors.grey.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          isPlaying
+                              ? Icons.graphic_eq_rounded
+                              : Icons.music_note_outlined,
+                          color: isPlaying
+                              ? const Color(0xFF6366F1)
+                              : Colors.grey,
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              isPlaying ? 'Now Playing' : 'Idle',
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 11,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              isPlaying
+                                  ? (_currentTrackTitle ?? 'Playing...')
+                                  : 'Waiting for play command',
+                              style: TextStyle(
+                                color: isPlaying ? Colors.white : Colors.grey,
+                                fontWeight: isPlaying
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                                fontSize: 15,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (isPlaying)
+                        const Icon(Icons.volume_up,
+                            color: Color(0xFF6366F1), size: 20),
+                    ],
+                  ),
+                );
+              },
+            ),
+
+            const SizedBox(height: 20),
+
             // Last command card
             Container(
               width: double.infinity,
@@ -128,8 +214,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text('Last Command',
-                      style: TextStyle(color: Colors.grey, fontSize: 12)),
-                  const SizedBox(height: 8),
+                      style: TextStyle(color: Colors.grey, fontSize: 11,
+                          letterSpacing: 1)),
+                  const SizedBox(height: 6),
                   Text(
                     _lastCommand.toUpperCase(),
                     style: const TextStyle(
@@ -140,59 +227,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // Playback status
-            StreamBuilder(
-              stream: _audio.player.playerStateStream,
-              builder: (context, snapshot) {
-                final state = snapshot.data;
-                final isPlaying = state?.playing ?? false;
-
-                return Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1A1A2E),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        isPlaying
-                            ? Icons.graphic_eq_rounded
-                            : Icons.music_note_outlined,
-                        color: isPlaying
-                            ? const Color(0xFF6366F1)
-                            : Colors.grey,
-                        size: 32,
-                      ),
-                      const SizedBox(width: 16),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            isPlaying ? 'Playing' : 'Idle',
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16),
-                          ),
-                          Text(
-                            isPlaying
-                                ? 'Audio output active'
-                                : 'Waiting for play command',
-                            style: const TextStyle(
-                                color: Colors.grey, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              },
             ),
           ],
         ),
