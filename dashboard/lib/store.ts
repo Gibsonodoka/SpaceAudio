@@ -46,10 +46,12 @@ export const useStore = create<Store>((set) => ({
 
   setNodes: (nodes) => set({ nodes }),
 
-  updateNodeStatus: (nodeId, status) =>
+    updateNodeStatus: (nodeId, status) =>
     set((state) => ({
-      nodes: state.nodes.map((n) =>
-        n.id === nodeId ? { ...n, status } : n
-      ),
+        nodes: state.nodes.map((n) =>
+        n.id === nodeId
+            ? { ...n, status, last_seen: new Date().toISOString() }
+            : n
+        ),
     })),
 }))

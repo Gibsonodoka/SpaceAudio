@@ -1,16 +1,14 @@
 import jwt from 'jsonwebtoken'
 import supabase from '../config/supabase.js'
 
-const connectedNodes = new Map() // nodeId -> socketId
+const connectedNodes = new Map()
 const connectedAdmins = new Set()
 
 export const initSocket = (io) => {
 
-  // Auth middleware for socket connections
   io.use((socket, next) => {
     const token = socket.handshake.auth.token
     if (!token) return next(new Error('No token'))
-
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET)
       socket.decoded = decoded
@@ -21,11 +19,10 @@ export const initSocket = (io) => {
   })
 
   io.on('connection', async (socket) => {
-    const { type, id, nodeId } = socket.decoded
+    const { type } = socket.decoded
 
     // --- NODE CONNECTED ---
     if (type === 'node') {
-      // Find node in DB by token
       const { data: node } = await supabase
         .from('nodes')
         .select('*')
@@ -41,102 +38,117 @@ export const initSocket = (io) => {
       socket.nodeName = node.name
       connectedNodes.set(node.id, socket.id)
 
-      // Mark node online
+      // Mark online immediately
       await supabase
         .from('nodes')
         .update({ status: 'online', last_seen: new Date().toISOString() })
         .eq('id', node.id)
 
-      console.log(`Node connected: ${node.name} (${node.id})`)
+      console.log(`Node connected: ${node.name}`)
 
-      // Notify all admins
-      io.to('admins').emit('node_status_changed', {
-        nodeId: node.id,
-        name: node.name,
-        status: 'online'
-      })
+      // Notify ALL current admin sockets directly
+      for (const adminSocketId of connectedAdmins) {
+        io.to(adminSocketId).emit('node_status_changed', {
+          nodeId: node.id,
+          name: node.name,
+          status: 'online',
+          last_seen: new Date().toISOString()
+        })
+      }
 
       socket.join('nodes')
 
-      // Heartbeat from node
+      // Heartbeat
       socket.on('heartbeat', async () => {
+        const now = new Date().toISOString()
         await supabase
           .from('nodes')
-          .update({ last_seen: new Date().toISOString() })
+          .update({ last_seen: now })
           .eq('id', node.id)
-
         socket.emit('heartbeat_ack')
       })
 
-      // Node reports playback started
       socket.on('playback_started', async ({ trackId }) => {
         await supabase.from('playback_logs').insert({
           node_id: node.id,
           track_id: trackId,
           action: 'play'
         })
-        io.to('admins').emit('node_playback_update', {
-          nodeId: node.id,
-          action: 'play',
-          trackId
-        })
+        for (const adminSocketId of connectedAdmins) {
+          io.to(adminSocketId).emit('node_playback_update', {
+            nodeId: node.id,
+            action: 'play',
+            trackId
+          })
+        }
       })
 
-      // Node reports playback stopped
       socket.on('playback_stopped', async ({ trackId }) => {
         await supabase.from('playback_logs').insert({
           node_id: node.id,
           track_id: trackId,
           action: 'stop'
         })
-        io.to('admins').emit('node_playback_update', {
-          nodeId: node.id,
-          action: 'stop',
-          trackId
-        })
+        for (const adminSocketId of connectedAdmins) {
+          io.to(adminSocketId).emit('node_playback_update', {
+            nodeId: node.id,
+            action: 'stop',
+            trackId
+          })
+        }
       })
 
-      // Node reports error
       socket.on('error_report', (data) => {
         console.error(`Node error [${node.name}]:`, data)
-        io.to('admins').emit('node_error', { nodeId: node.id, ...data })
+        for (const adminSocketId of connectedAdmins) {
+          io.to(adminSocketId).emit('node_error', { nodeId: node.id, ...data })
+        }
       })
 
-      // Node disconnected
-      socket.on('disconnect', async () => {
+      socket.on('disconnect', async (reason) => {
         connectedNodes.delete(node.id)
+        console.log(`Node disconnected: ${node.name} — ${reason}`)
+
         await supabase
           .from('nodes')
           .update({ status: 'offline' })
           .eq('id', node.id)
 
-        console.log(`Node disconnected: ${node.name}`)
-        io.to('admins').emit('node_status_changed', {
-          nodeId: node.id,
-          name: node.name,
-          status: 'offline'
-        })
+        for (const adminSocketId of connectedAdmins) {
+          io.to(adminSocketId).emit('node_status_changed', {
+            nodeId: node.id,
+            name: node.name,
+            status: 'offline'
+          })
+        }
       })
     }
 
     // --- ADMIN CONNECTED ---
     if (type === 'admin') {
-      socket.join('admins')
       connectedAdmins.add(socket.id)
+      socket.join('admins')
       console.log(`Admin connected: ${socket.decoded.email}`)
 
-      // Admin sends command to ALL nodes
+      // Immediately send current state of all nodes
+      const { data: allNodes } = await supabase
+        .from('nodes')
+        .select('id, name, status, last_seen, location')
+
+      if (allNodes) {
+        socket.emit('nodes_snapshot', allNodes)
+      }
+
       socket.on('cmd_all', ({ command, payload }) => {
         io.to('nodes').emit('command', { command, payload })
-        console.log(`CMD ALL: ${command}`, payload)
+        console.log(`CMD ALL: ${command}`)
       })
 
-      // Admin sends command to ONE node
       socket.on('cmd_node', ({ nodeId, command, payload }) => {
         const targetSocketId = connectedNodes.get(nodeId)
         if (targetSocketId) {
           io.to(targetSocketId).emit('command', { command, payload })
-          console.log(`CMD NODE [${nodeId}]: ${command}`, payload)
+          console.log(`CMD NODE [${nodeId}]: ${command}`)
         }
       })
 

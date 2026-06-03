@@ -12,10 +12,9 @@ export default function DashboardLayout({
   children: React.ReactNode
 }) {
   const router = useRouter()
-  const { token, user, setAuth, updateNodeStatus } = useStore()
+  const { token, setAuth, setNodes, updateNodeStatus } = useStore()
 
   useEffect(() => {
-    // Rehydrate from localStorage
     const storedToken = localStorage.getItem('aud_token')
     const storedUser = localStorage.getItem('aud_user')
 
@@ -28,18 +27,33 @@ export default function DashboardLayout({
       setAuth(JSON.parse(storedUser), storedToken)
     }
 
-    // Connect socket
-    const socket = getSocket()
+    // Pass token explicitly so socket connects with fresh token
+    const socket = getSocket(storedToken)
 
     socket.on('connect', () => {
-      console.log('Admin socket connected')
+      console.log('Admin socket connected:', socket.id)
     })
 
-    socket.on('node_status_changed', ({ nodeId, status }) => {
+    socket.on('connect_error', (err) => {
+      console.error('Socket connect error:', err.message)
+    })
+
+    // Full snapshot when admin connects
+    socket.on('nodes_snapshot', (nodes) => {
+      console.log('Received nodes snapshot:', nodes)
+      setNodes(nodes)
+    })
+
+    // Individual status updates
+    socket.on('node_status_changed', ({ nodeId, status, name, last_seen }) => {
+      console.log('Node status changed:', nodeId, status)
       updateNodeStatus(nodeId, status)
     })
 
     return () => {
+      socket.off('connect')
+      socket.off('connect_error')
+      socket.off('nodes_snapshot')
       socket.off('node_status_changed')
     }
   }, [])
